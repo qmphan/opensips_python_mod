@@ -85,6 +85,7 @@ static int
 mod_init(void)
 {
     char *dname, *bname;
+    static char temp_s[1000];
     int i;
     PyObject *sys_path, *pDir, *pModule, *pFunc, *pArgs;
     PyThreadState *mainThreadState;
@@ -99,10 +100,15 @@ mod_init(void)
         child_init_mname.len = strlen(child_init_mname.s);
     }
 
-    dname = dirname(script_name.s);
+    
+    strncpy(temp_s, script_name.s, sizeof(temp_s));
+    dname = dirname(temp_s);
+    printf("after dirname");
     if (strlen(dname) == 0)
         dname = ".";
-    bname = basename(script_name.s);
+
+    strncpy(temp_s, script_name.s, sizeof(temp_s));
+    bname = basename(temp_s);
     i = strlen(bname);
     if (bname[i - 1] == 'c' || bname[i - 1] == 'o')
         i -= 1;
@@ -146,6 +152,7 @@ mod_init(void)
     pModule = PyImport_ImportModule(bname);
     if (pModule == NULL) {
         LM_ERR("cannot import %s\n", bname);
+	PyErr_Print();
         PyEval_ReleaseLock();
         return -1;
     }
