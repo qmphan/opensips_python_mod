@@ -42,7 +42,23 @@ opensips_LM_ERR(PyObject *self, PyObject *args)
     return Py_None;
 }
 
+static PyObject*
+opensips_LM_DBG(PyObject *self, PyObject *args)
+{
+    char *msg;
+
+    if(!PyArg_ParseTuple(args, "s:LM_DBG", &msg))
+        return NULL;
+
+    LM_DBG("%s", msg);
+
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
 PyMethodDef OpenSIPSMethods[] = {
+    {"LM_DBG", opensips_LM_DBG, METH_VARARGS,
+     "Pring debug message."},
     {"LM_ERR", opensips_LM_ERR, METH_VARARGS,
      "Pring error message."},
     {NULL, NULL, 0, NULL}
