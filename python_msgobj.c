@@ -184,10 +184,163 @@ msg_getHeader(msgobject *self, PyObject *args)
 }
 
 static PyObject *
+msg_get_pv(msgobject *self, PyObject *args)
+{
+    struct hdr_field *hf;
+    str pvname, *pv_value;
+    pv_spec_t pv_spec; 
+    pv_value_t pv_val;
+    char tmp[200];
+
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+
+    if(!PyArg_ParseTuple(args, "s:get_pv", &pvname.s))
+        return NULL;
+    pvname.len = strlen(pvname.s);
+    if (pv_parse_spec(&pvname, &pv_spec)==0 || pv_spec.type==PVT_NULL) {
+            snprintf(tmp, sizeof(tmp), "Invalid PV name %s", pvname.s);
+            PyErr_SetString(PyExc_RuntimeError, tmp);
+            Py_INCREF(Py_None);
+            return Py_None;
+    } 
+
+    if (pv_get_spec_value( self->msg, (pv_spec_p) &pv_spec, &pv_val)!=0) {
+        snprintf(tmp, sizeof(tmp), "Failed to get pv value for %s", pvname.s);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    
+    if (pv_val.flags & PV_VAL_INT) {
+        return PyLong_FromLong(pv_val.ri);
+    }
+    else if (pv_val.flags & PV_VAL_STR) {
+        return PyString_FromStringAndSize(pv_val.rs.s, pv_val.rs.len);
+    }    
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+msg_set_pv(msgobject *self, PyObject *args)
+{
+    struct hdr_field *hf;
+    str pvname, value;
+    pv_spec_t pv_spec; 
+    pv_value_t pv_val;
+    PyObject * listObj; /* the list of strings */
+    char tmp[200];
+
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+
+    if(!PyArg_ParseTuple(args, "ss:set_pv", &pvname.s, &value.s))
+        return NULL;
+    pvname.len = strlen(pvname.s);
+    value.len = strlen(value.s);
+    if (pv_parse_spec(&pvname, &pv_spec)==0 || pv_spec.type==PVT_NULL) {
+            snprintf(tmp, sizeof(tmp), "Invalid PV name %s", pvname.s);
+            PyErr_SetString(PyExc_RuntimeError, tmp);
+            Py_INCREF(Py_None);
+            return Py_None;
+    } 
+    pv_val.flags = PV_VAL_STR;
+    pv_val.rs = value;
+    if (pv_set_value( self->msg, (pv_spec_p) &pv_spec, 0, &pv_val)!=0) {
+        snprintf(tmp, sizeof(tmp), "Failed to set pv value for %s", pvname.s);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+    }
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+msg_delete_avp(msgobject *self, PyObject *args)
+{
+    str avp_name;
+    int delete_all, avp_id;
+    pv_spec_t pv_spec;
+    char tmp[200];
+
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+
+    if(!PyArg_ParseTuple(args, "si:delete_avp", &avp_name.s, &delete_all))
+        return NULL;
+    avp_name.len = strlen(avp_name.s);
+    avp_id = get_avp_id(&avp_name);
+    if (avp_id < 0) {
+        snprintf(tmp, sizeof(tmp), "Cannot find avp with name %s", avp_name.s);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    destroy_avps(0, avp_id, delete_all);
+    
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+static PyObject *
+msg_run_script_route(msgobject *self, PyObject *args)
+{
+    char *route_name;
+    int route_idx, ret;
+    char tmp[200];
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+
+    if(!PyArg_ParseTuple(args, "s:run_route", &route_name)) {
+        return NULL;
+    }
+    route_idx = get_script_route_ID_by_name(route_name, rlist, RT_NO);
+    if (route_idx == -1) {
+        snprintf(tmp, sizeof(tmp), "Cannot find route with name %s", route_name);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+        Py_INCREF(Py_None);
+        return Py_None;
+    }
+    ret = run_top_route( rlist[route_idx].a, self->msg );
+    if (ret&ACT_FL_DROP) {
+       /* drop the action */
+       LM_DBG("script route %s drops routing "
+               "by %d\n", rlist[route_idx].name, ret);
+        Py_INCREF(Py_False);
+        return Py_False;
+    }
+    Py_INCREF(Py_True);
+    return Py_True;
+}
+
+
+/* This function msg_call_function is dangerous to call. The problem is that each 
+ * fixup function of functions exported by OpenSIPS modules handles behaves differently
+ * regarding who free the memory. Some fixup functions free the memory pointed to by 
+ * its parameters (e.g alias_db module) while other don't. 
+ * In routing script, there is no problem because the fixup functions are called only ONE time
+ * and memory malloc'ed by these fixup functions is never freed. However, the msg_call_function
+ * can be called many time and if we don't handle this correctly, there will be memory leak
+*/
+
+/*
+static PyObject *
 msg_call_function(msgobject *self, PyObject *args)
 {
     int i, rval;
-    char *fname, *arg1, *arg2;
+    char *fname, *arg1, *arg2, *arg3;
     cmd_export_t *fexport;
     struct action *act;
     action_elem_t elems[MAX_ACTION_ELEMS];
@@ -199,14 +352,14 @@ msg_call_function(msgobject *self, PyObject *args)
     }
 
     i = PySequence_Size(args);
-    if (i < 1 || i > 3) {
+    if (i < 1 || i > 4) {
         PyErr_SetString(PyExc_RuntimeError, "call_function() should " \
-          "have from 1 to 3 arguments");
+          "have from 1 to 4 arguments");
         Py_INCREF(Py_None);
         return Py_None;
     }
-
-    if(!PyArg_ParseTuple(args, "s|ss:call_function", &fname, &arg1, &arg2))
+    
+    if(!PyArg_ParseTuple(args, "s|sss:call_function", &fname, &arg1, &arg2, &arg3))
         return NULL;
 
     fexport = find_cmd_export_t(fname, i - 1, 0);
@@ -222,7 +375,9 @@ msg_call_function(msgobject *self, PyObject *args)
     elems[1].u.data = arg1;
     elems[2].type = STRING_ST;
     elems[2].u.data = arg2;
-    act = mk_action(MODULE_T, 3, elems, 0);
+    elems[3].type = STRING_ST;
+    elems[3].u.data = arg3;
+    act = mk_action(MODULE_T, i, elems, 0);
 
     if (act == NULL) {
         PyErr_SetString(PyExc_RuntimeError,
@@ -232,6 +387,15 @@ msg_call_function(msgobject *self, PyObject *args)
     }
 
     if (fexport->fixup != NULL) {
+        if (i >= 4) {
+            rval = fexport->fixup(&(act->elem[3].u.data), 3);
+            if (rval < 0) {
+                PyErr_SetString(PyExc_RuntimeError, "Error in fixup (3)");
+                Py_INCREF(Py_None);
+                return Py_None;
+            }
+            act->elem[3].type = MODFIXUP_ST;
+        }
         if (i >= 3) {
             rval = fexport->fixup(&(act->elem[2].u.data), 2);
             if (rval < 0) {
@@ -259,8 +423,10 @@ msg_call_function(msgobject *self, PyObject *args)
             }
         }
     }
-
     rval = do_action(act, self->msg);
+    if ((act->elem[3].type == MODFIXUP_ST) && (act->elem[3].u.data)) {
+       pkg_free(act->elem[3].u.data);
+    }
 
     if ((act->elem[2].type == MODFIXUP_ST) && (act->elem[2].u.data)) {
        pkg_free(act->elem[2].u.data);
@@ -271,9 +437,9 @@ msg_call_function(msgobject *self, PyObject *args)
     }
 
     pkg_free(act);
-
     return PyInt_FromLong(rval);
 }
+*/
 
 PyDoc_STRVAR(copy_doc,
 "copy() -> msg object\n\
@@ -288,8 +454,14 @@ static PyMethodDef msg_methods[] = {
       "Set destination URI."},
     {"getHeader",     (PyCFunction)msg_getHeader,     METH_VARARGS,
       "Get SIP header field by name."},
-    {"call_function", (PyCFunction)msg_call_function, METH_VARARGS,
-      "Invoke function exported by the other module."},
+    {"run_script_route", (PyCFunction)msg_run_script_route, METH_VARARGS,
+      "Run a routing block from python script."},
+    {"get_pv", (PyCFunction)msg_get_pv, METH_VARARGS,
+      "Get value of a pseudo variable."},
+    {"set_pv", (PyCFunction)msg_set_pv, METH_VARARGS,
+      "Set value of a pseudo variable."},
+    {"delete_avp", (PyCFunction)msg_delete_avp, METH_VARARGS,
+      "Delete AVPs by name."},
     {NULL, NULL, 0, NULL}                              /* sentinel */
 };
 
