@@ -22,7 +22,8 @@
 
 #include "../../str.h"
 #include "../../sr_module.h"
-
+#include "../../mem/shm_mem.h"
+#include "../dialog/dlg_load.h"
 #include "python_exec.h"
 #include "python_iface.h"
 #include "python_msgobj.h"
@@ -35,7 +36,8 @@ static int mod_init(void);
 static int child_init(int rank);
 static void mod_destroy(void);
 
-static str script_name = {.s = "/usr/local/etc/opensips/handler.py", .len = 0};
+static str python_router = {.s = "pyopensips.confighelper.router", .len = 0};
+static str script_name = {.s = "handler.py", .len = 0};
 static str mod_init_fname = { .s = "mod_init", .len = 0};
 static str child_init_mname = { .s = "child_init", .len = 0};
 PyObject *handler_obj;
@@ -43,8 +45,12 @@ PyObject *format_exc_obj;
 
 PyThreadState *myThreadState;
 
+/* dialog stuff */
+struct dlg_binds *lb_dlg_binds;
+
 /** module parameters */
 static param_export_t params[]={
+    {"python_router",      STR_PARAM, &python_router},
     {"script_name",        STR_PARAM, &script_name },
     {"mod_init_function",  STR_PARAM, &mod_init_fname },
     {"child_init_method",  STR_PARAM, &child_init_mname },
@@ -90,6 +96,17 @@ mod_init(void)
     PyObject *sys_path, *pDir, *pModule, *pFunc, *pArgs;
     PyThreadState *mainThreadState;
 
+    /* Load dialog API */
+    lb_dlg_binds = (struct dlg_binds*)shm_malloc( sizeof(struct dlg_binds) );
+    if (lb_dlg_binds == 0) {
+        LM_CRIT("failed to get shm mem for dialog binding data struct\n");
+        return -1;
+    }
+    if (load_dlg_api(lb_dlg_binds) != 0) {
+        shm_free(lb_dlg_binds);
+        lb_dlg_binds = NULL;
+    }
+
     if (script_name.len == 0) {
         script_name.len = strlen(script_name.s);
     }
@@ -99,7 +116,6 @@ mod_init(void)
     if (child_init_mname.len == 0) {
         child_init_mname.len = strlen(child_init_mname.s);
     }
-
     
     strncpy(temp_s, script_name.s, sizeof(temp_s));
     dname = dirname(temp_s);
@@ -114,12 +130,14 @@ mod_init(void)
         i -= 1;
     if (bname[i - 3] == '.' && bname[i - 2] == 'p' && bname[i - 1] == 'y') {
         bname[i - 3] = '\0';
-    } else {
+    } 
+/*
+    else {
         LM_ERR("%s: script_name doesn't look like a python script\n",
           script_name.s);
         return -1;
     }
-
+*/
     Py_Initialize();
     PyEval_InitThreads();
     mainThreadState = PyThreadState_Get();
@@ -149,9 +167,11 @@ mod_init(void)
     PyList_Insert(sys_path, 0, pDir);
     Py_DECREF(pDir);
 
-    pModule = PyImport_ImportModule(bname);
+//    pModule = PyImport_ImportModule(bname);
+    pModule = PyImport_ImportModule(python_router.s);
+
     if (pModule == NULL) {
-        LM_ERR("cannot import %s\n", bname);
+        LM_ERR("cannot import %s\n", python_router.s);
 	PyErr_Print();
         PyEval_ReleaseLock();
         return -1;

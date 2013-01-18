@@ -24,6 +24,7 @@
 #include "../../mem/mem.h"
 #include "../../sr_module.h"
 #include "../../parser/msg_parser.h"
+#include "../dialog/dlg_load.h"
 
 #include <Python.h>
 #include "structmember.h"
@@ -31,6 +32,9 @@
 #ifndef Py_TYPE
 #define Py_TYPE(ob)               (((PyObject*)(ob))->ob_type)
 #endif
+
+//Dialog binding struct
+extern struct dlg_binds *lb_dlg_binds;
 
 typedef struct {
     PyObject_HEAD
@@ -186,8 +190,7 @@ msg_getHeader(msgobject *self, PyObject *args)
 static PyObject *
 msg_get_pv(msgobject *self, PyObject *args)
 {
-    struct hdr_field *hf;
-    str pvname, *pv_value;
+    str pvname;
     pv_spec_t pv_spec; 
     pv_value_t pv_val;
     char tmp[200];
@@ -228,11 +231,9 @@ msg_get_pv(msgobject *self, PyObject *args)
 static PyObject *
 msg_set_pv(msgobject *self, PyObject *args)
 {
-    struct hdr_field *hf;
     str pvname, value;
     pv_spec_t pv_spec; 
     pv_value_t pv_val;
-    PyObject * listObj; /* the list of strings */
     char tmp[200];
 
     if (self->msg == NULL) {
@@ -266,7 +267,6 @@ msg_delete_avp(msgobject *self, PyObject *args)
 {
     str avp_name;
     int delete_all, avp_id;
-    pv_spec_t pv_spec;
     char tmp[200];
 
     if (self->msg == NULL) {
@@ -299,8 +299,7 @@ msg_run_script_route(msgobject *self, PyObject *args)
     char tmp[200];
     if (self->msg == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
-        Py_INCREF(Py_None);
-        return Py_None;
+        Py_RETURN_NONE;
     }
 
     if(!PyArg_ParseTuple(args, "s:run_route", &route_name)) {
@@ -310,21 +309,192 @@ msg_run_script_route(msgobject *self, PyObject *args)
     if (route_idx == -1) {
         snprintf(tmp, sizeof(tmp), "Cannot find route with name %s", route_name);
         PyErr_SetString(PyExc_RuntimeError, tmp);
-        Py_INCREF(Py_None);
-        return Py_None;
+        Py_RETURN_NONE;
     }
     ret = run_top_route( rlist[route_idx].a, self->msg );
     if (ret&ACT_FL_DROP) {
        /* drop the action */
        LM_DBG("script route %s drops routing "
                "by %d\n", rlist[route_idx].name, ret);
-        Py_INCREF(Py_False);
-        return Py_False;
+       Py_RETURN_FALSE; 
     }
-    Py_INCREF(Py_True);
-    return Py_True;
+
+    Py_RETURN_TRUE;
 }
 
+static PyObject*
+msg_set_dlg_profile(msgobject *self, PyObject *args)
+{
+    str profile_name;
+    str value;
+    int auto_create = 0;
+    struct dlg_profile_table * profile;
+    char tmp[500];
+
+    if (lb_dlg_binds == NULL) {
+        printf("lb_dlg_binds is NULL");
+        fflush(stderr);
+        fflush(stdout);
+        PyErr_SetString(PyExc_RuntimeError, "Dialog module is not loaded");
+        return NULL;
+    }
+    /* create dialog if it is not already created*/
+    if (lb_dlg_binds->create_dlg( self->msg, 0)!=1 ) {
+            PyErr_SetString(PyExc_RuntimeError, "Failed to create dialog");
+            return NULL;
+    }
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        return NULL;
+    }
+    if(!PyArg_ParseTuple(args, "ss|i:set_dlg_profile", &profile_name.s, &value.s, &auto_create))
+        return NULL;
+    profile_name.len = strlen(profile_name.s);
+    value.len = strlen(value.s);
+    profile = lb_dlg_binds->search_profile(&profile_name);
+    if (profile==NULL ) {
+        if (auto_create) {
+            if ( lb_dlg_binds->add_profiles(profile_name.s, 1) != 0 ) {
+                PyErr_SetString(PyExc_RuntimeError, "Unable to create new profile");
+                return NULL;
+            }
+            // Search again for the newly created profile
+            profile = lb_dlg_binds->search_profile(&profile_name);
+            if (!profile) {
+                PyErr_SetString(PyExc_RuntimeError, "BUG: cannot find newly created profile");
+                return NULL;
+            }
+        }
+        else {
+            snprintf(tmp, sizeof(tmp), "Profile <%s> is not definied", profile_name.s);
+            PyErr_SetString(PyExc_RuntimeError, tmp);
+             return NULL;
+        }
+    }
+    if (profile->has_value) {
+        if ( lb_dlg_binds->set_profile( self->msg, &value, profile) < 0 ) {
+            PyErr_SetString(PyExc_RuntimeError, "Failed to set dialog's profile");
+            return NULL;
+        }
+    } else {
+         if ( lb_dlg_binds->set_profile( self->msg, NULL, profile) < 0 ) {
+            PyErr_SetString(PyExc_RuntimeError, "Failed to set dialog's profile");
+            return NULL;
+         }
+    }
+    Py_RETURN_TRUE;
+}
+
+static PyObject*
+msg_get_dlg_profile_size(msgobject *self, PyObject *args)
+{
+    str profile_name;
+    str value;
+    struct dlg_profile_table * profile;
+    char tmp[500];
+    int ret = 0;
+
+    if (lb_dlg_binds == NULL) {
+        printf("lb_dlg_binds is NULL");
+        fflush(stderr);
+        fflush(stdout);
+        PyErr_SetString(PyExc_RuntimeError, "Dialog module is not loaded");
+        return NULL;
+    }
+    
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        return NULL;
+    }
+    value.s = NULL;
+    if(!PyArg_ParseTuple(args, "s|s:set_dlg_profile", &profile_name.s, &value.s))
+        return NULL;
+    profile_name.len = strlen(profile_name.s);
+    if (value.s) {
+        value.len = strlen(value.s);
+    }
+    // Search for the profile
+    profile = lb_dlg_binds->search_profile(&profile_name);
+    if (profile==NULL ) {
+        snprintf(tmp, sizeof(tmp), "Profile <%s> is not definied", profile_name.s);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+        return NULL;
+    }
+    if (value.s) {
+        ret = lb_dlg_binds->get_profile_size(profile, &value);
+    }
+    else {
+        ret = lb_dlg_binds->get_profile_size(profile, NULL);
+    }
+    return PyInt_FromLong(ret);
+}
+
+static PyObject*
+msg_store_dlg_value(msgobject *self, PyObject *args)
+{
+    str name;
+    str value;
+    struct dlg_cell *dlg;
+    int ret = 0;
+
+    if (lb_dlg_binds == NULL) {
+        printf("lb_dlg_binds is NULL");
+        fflush(stderr);
+        fflush(stdout);
+        PyErr_SetString(PyExc_RuntimeError, "Dialog module is not loaded");
+        return NULL;
+    }
+    
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        return NULL;
+    }
+    if(!PyArg_ParseTuple(args, "ss:store_dlg_value", &name.s, &value.s))
+        return NULL;
+    name.len = strlen(name.s);
+    value.len = strlen(value.s);
+                    
+    if ( (dlg=lb_dlg_binds->get_dlg())==NULL ) {
+        Py_RETURN_FALSE;
+    }
+    if ( lb_dlg_binds->store_dlg_value(dlg, &name, &value) == 0 ) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
+}
+
+static PyObject*
+msg_fetch_dlg_value(msgobject *self, PyObject *args)
+{
+    str name;
+    str value;
+    struct dlg_cell *dlg;
+    int ret = 0;
+
+    if (lb_dlg_binds == NULL) {
+        printf("lb_dlg_binds is NULL");
+        fflush(stderr);
+        fflush(stdout);
+        PyErr_SetString(PyExc_RuntimeError, "Dialog module is not loaded");
+        return NULL;
+    }
+    
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        return NULL;
+    }
+    if(!PyArg_ParseTuple(args, "s:fetch_dlg_value", &name.s))
+        return NULL;
+    name.len = strlen(name.s);
+                    
+    if ( (dlg=lb_dlg_binds->get_dlg())==NULL ) {
+        Py_RETURN_FALSE;
+    }
+    if ( lb_dlg_binds->fetch_dlg_value(dlg, &name, &value, 0) == 0 ) {
+        return PyString_FromStringAndSize(value.s, value.len);
+    }
+    Py_RETURN_NONE;
+}
 
 /* This function msg_call_function is dangerous to call. The problem is that each 
  * fixup function of functions exported by OpenSIPS modules handles behaves differently
@@ -462,6 +632,14 @@ static PyMethodDef msg_methods[] = {
       "Set value of a pseudo variable."},
     {"delete_avp", (PyCFunction)msg_delete_avp, METH_VARARGS,
       "Delete AVPs by name."},
+    {"set_dlg_profile",   (PyCFunction)msg_set_dlg_profile,   METH_VARARGS,
+      "Set dialog profile with value."},
+    {"get_dlg_profile_size",   (PyCFunction)msg_get_dlg_profile_size,   METH_VARARGS,
+      "get the size of a dialog profile."},
+    {"set_dlg_value",   (PyCFunction)msg_store_dlg_value,   METH_VARARGS,
+      "Set a value for a dialog."},
+    {"get_dlg_value",   (PyCFunction)msg_fetch_dlg_value,   METH_VARARGS,
+      "get a value of a variable in a dialog."},
     {NULL, NULL, 0, NULL}                              /* sentinel */
 };
 

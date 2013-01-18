@@ -45,14 +45,14 @@ python_exec1(struct sip_msg* _msg, char* method_name, char *foobar)
 int
 python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
 {
-    PyObject *pFunc, *pArgs, *pValue, *pResult;
+    PyObject *pFunc, *pArgs, *pValue, *pResult, *pMethodName;
     PyObject *msg;
     int rval;
 
     PyEval_AcquireLock();
     PyThreadState_Swap(myThreadState);
 
-    pFunc = PyObject_GetAttrString(handler_obj, method_name);
+    pFunc = PyObject_GetAttrString(handler_obj, "call_routing_function");
     if (pFunc == NULL || !PyCallable_Check(pFunc)) {
         LM_ERR("%s not found or is not callable\n", method_name);
         Py_XDECREF(pFunc);
@@ -70,7 +70,7 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         return -1;
     }
 
-    pArgs = PyTuple_New(mystr == NULL ? 1 : 2);
+    pArgs = PyTuple_New(mystr == NULL ? 2 : 3);
     if (pArgs == NULL) {
         LM_ERR("PyTuple_New() has failed\n");
         msg_invalidate(msg);
@@ -80,7 +80,9 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         PyEval_ReleaseLock();
         return -1;
     }
-    PyTuple_SetItem(pArgs, 0, msg);
+    pMethodName = Py_BuildValue("s", method_name);
+    PyTuple_SetItem(pArgs, 0, pMethodName);
+    PyTuple_SetItem(pArgs, 1, msg);
     /* Tuple steals msg */
 
     if (mystr != NULL) {
@@ -94,7 +96,7 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
             PyEval_ReleaseLock();
             return -1;
         }
-        PyTuple_SetItem(pArgs, 1, pValue);
+        PyTuple_SetItem(pArgs, 2, pValue);
         /* Tuple steals pValue */
     }
 

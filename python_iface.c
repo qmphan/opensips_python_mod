@@ -23,6 +23,7 @@
 #include "../../action.h"
 #include "../../dprint.h"
 #include "../../route_struct.h"
+#include "../dialog/dlg_load.h"
 #include "python_exec.h"
 
 #include <Python.h>
@@ -49,16 +50,27 @@ opensips_LM_DBG(PyObject *self, PyObject *args)
 
     if(!PyArg_ParseTuple(args, "s:LM_DBG", &msg))
         return NULL;
-
     LM_DBG("%s", msg);
+    Py_INCREF(Py_None);
+    return Py_None;
+}
 
+static PyObject*
+opensips_LM_INFO(PyObject *self, PyObject *args)
+{
+    char *msg;
+    if(!PyArg_ParseTuple(args, "s:LM_INFO", &msg))
+        return NULL;
+    LM_INFO("%s", msg);
     Py_INCREF(Py_None);
     return Py_None;
 }
 
 PyMethodDef OpenSIPSMethods[] = {
     {"LM_DBG", opensips_LM_DBG, METH_VARARGS,
-     "Pring debug message."},
+     "Pring a debug message."},
+    {"LM_INFO", opensips_LM_INFO, METH_VARARGS,
+     "Pring an info message."},
     {"LM_ERR", opensips_LM_ERR, METH_VARARGS,
      "Pring error message."},
     {NULL, NULL, 0, NULL}
