@@ -47,6 +47,8 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
 {
     PyObject *pFunc, *pArgs, *pValue, *pResult, *pMethodName;
     PyObject *msg;
+    PyObject *tmp;
+    const char *s;
     int rval;
 
     PyEval_AcquireLock();
@@ -80,6 +82,7 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         PyEval_ReleaseLock();
         return -1;
     }
+
     pMethodName = Py_BuildValue("s", method_name);
     PyTuple_SetItem(pArgs, 0, pMethodName);
     PyTuple_SetItem(pArgs, 1, msg);
@@ -112,7 +115,7 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
         return -1;
     }
 
-    if (pResult == NULL) {
+    if (pResult == NULL || pResult == Py_None) {
         LM_ERR("PyObject_CallObject() returned NULL\n");
         PyThreadState_Swap(NULL);
         PyEval_ReleaseLock();
@@ -120,6 +123,14 @@ python_exec2(struct sip_msg *_msg, char *method_name, char *mystr)
     }
 
     rval = PyInt_AsLong(pResult);
+    if (PyErr_Occurred()) {
+        tmp = PyObject_Repr(pResult);
+        s = PyString_AsString(tmp);
+        LM_ERR("Python routing function return something other than an integer or None: %s", s);
+        PyErr_Clear();
+        rval = -1;
+    }
+
     Py_DECREF(pResult);
     PyThreadState_Swap(NULL);
     PyEval_ReleaseLock();

@@ -23,7 +23,9 @@
 #include "../../str.h"
 #include "../../sr_module.h"
 #include "../../mem/shm_mem.h"
+#include "../tm/tm_load.h"
 #include "../dialog/dlg_load.h"
+
 #include "python_exec.h"
 #include "python_iface.h"
 #include "python_msgobj.h"
@@ -45,8 +47,9 @@ PyObject *format_exc_obj;
 
 PyThreadState *myThreadState;
 
-/* dialog stuff */
+/* External module bindings */
 struct dlg_binds *lb_dlg_binds;
+struct tm_binds python_tmb;
 
 /** module parameters */
 static param_export_t params[]={
@@ -105,6 +108,12 @@ mod_init(void)
     if (load_dlg_api(lb_dlg_binds) != 0) {
         shm_free(lb_dlg_binds);
         lb_dlg_binds = NULL;
+    }
+
+    /* load TM API */
+    if (load_tm_api(&python_tmb)!=0) {
+	LM_ERR("can't load TM API\n");
+	return -1;
     }
 
     if (script_name.len == 0) {
@@ -207,7 +216,8 @@ mod_init(void)
         return -1;
     }
 
-    pArgs = PyTuple_New(0);
+    //pArgs = PyTuple_New(0);
+    pArgs = Py_BuildValue("(s)", script_name.s);
     if (pArgs == NULL) {
         LM_ERR("PyTuple_New() has failed\n");
         Py_DECREF(pFunc);
