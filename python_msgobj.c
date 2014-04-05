@@ -23,6 +23,9 @@
 #include "../../action.h"
 #include "../../mem/mem.h"
 #include "../../sr_module.h"
+#include "../../mod_fix.h"
+#include "../../data_lump.h"
+#include "../../dset.h"
 #include "../../parser/msg_parser.h"
 #include "../dialog/dlg_load.h"
 #include "../tm/tm_load.h"
@@ -154,6 +157,125 @@ msg_set_dst_uri(msgobject *self, PyObject *args)
 
     Py_INCREF(Py_None);
     return Py_None;
+}
+
+/*---------------------------- HEADERS MANIPULATION ------------------------------*/
+
+/* add_hf_helper function copied from sipmsgops module */
+static int add_hf_helper(struct sip_msg* msg, str *str1, str *str2,
+		gparam_p hfval, int mode, gparam_p hfanc)
+{
+	struct lump* anchor;
+	struct hdr_field *hf;
+	char *s;
+	int len;
+	str s0;
+
+	if (parse_headers(msg, HDR_EOH_F, 0) == -1) {
+		LM_ERR("error while parsing message\n");
+		return -1;
+	}
+	
+	hf = 0;
+	if(hfanc!=NULL) {
+		for (hf=msg->headers; hf; hf=hf->next) {
+			if(hfanc->type==GPARAM_TYPE_INT)
+			{
+				if (hfanc->v.ival!=hf->type)
+					continue;
+			} else {
+				if (hf->type!=HDR_OTHER_T)
+					continue;
+				if (hf->name.len!=hfanc->v.sval.len)
+					continue;
+				if (strncasecmp(hf->name.s,hfanc->v.sval.s,hf->name.len)!=0)
+					continue;
+			}
+			break;
+		}
+	}
+
+	if(mode == 0) { /* append */
+		if(hf==0) { /* after last header */
+			anchor = anchor_lump(msg, msg->unparsed - msg->buf, 0, 0);
+		} else { /* after hf */
+			anchor = anchor_lump(msg, hf->name.s + hf->len - msg->buf, 0, 0);
+		}
+	} else { /* insert */
+		if(hf==0) { /* before first header */
+			anchor = anchor_lump(msg, msg->headers->name.s - msg->buf, 0, 0);
+		} else { /* before hf */
+			anchor = anchor_lump(msg, hf->name.s - msg->buf, 0, 0);
+		}
+	}
+
+	if(anchor == 0) {
+		LM_ERR("can't get anchor\n");
+		return -1;
+	}
+
+	if(str1) {
+		s0 = *str1;
+	} else {
+		if(hfval) {
+			if(fixup_get_svalue(msg, hfval, &s0)!=0)
+			{
+				LM_ERR("cannot print the format\n");
+				return -1;
+			}
+		} else {
+			s0.len = 0;
+			s0.s   = 0;
+		}
+	}
+		
+	len=s0.len;
+	if (str2) len+= str2->len + REQ_LINE(msg).uri.len;
+
+	s = (char*)pkg_malloc(len);
+	if (!s) {
+		LM_ERR("no pkg memory left\n");
+		return -1;
+	}
+
+	memcpy(s, s0.s, s0.len);
+	if (str2) {
+		memcpy(s+str1->len, REQ_LINE(msg).uri.s, REQ_LINE(msg).uri.len);
+		memcpy(s+str1->len+REQ_LINE(msg).uri.len, str2->s, str2->len );
+	}
+
+	if (insert_new_lump_before(anchor, s, len, 0) == 0) {
+		LM_ERR("can't insert lump\n");
+		pkg_free(s);
+		return -1;
+	}
+	return 0;
+}
+
+static PyObject *
+msg_appendHeader(msgobject *self, PyObject *args)
+{
+    char tmp[200];
+    void *hdr;
+    int ret;
+    if (self->msg == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
+        return NULL;
+    }
+
+    if(!PyArg_ParseTuple(args, "s:appendHeader", (char**)&hdr))
+        return NULL;
+    if (fixup_spve_null(&hdr, 1) != 0) {
+        snprintf(tmp, sizeof(tmp), "Invalid header value %s", hdr);
+        PyErr_SetString(PyExc_RuntimeError, tmp);
+        return NULL;
+    }
+    ret = add_hf_helper(self->msg, 0, 0, (gparam_p)hdr, 0, 0);
+    pkg_free(hdr);
+    if (ret == 0) {
+        Py_RETURN_TRUE;
+    }
+    Py_RETURN_FALSE;
 }
 
 static PyObject *
@@ -345,6 +467,7 @@ msg_run_script_route(msgobject *self, PyObject *args)
     }
 
     if(!PyArg_ParseTuple(args, "s:run_route", &route_name)) {
+        PyErr_SetString(PyExc_RuntimeError, "python module: msg_run_script_route: Unable to parse param name");
         return NULL;
     }
     route_idx = get_script_route_ID_by_name(route_name, rlist, RT_NO);
@@ -388,8 +511,10 @@ msg_set_dlg_profile(msgobject *self, PyObject *args)
         PyErr_SetString(PyExc_RuntimeError, "self->msg is NULL");
         return NULL;
     }
-    if(!PyArg_ParseTuple(args, "ss|i:set_dlg_profile", &profile_name.s, &value.s, &auto_create))
+    if(!PyArg_ParseTuple(args, "ss|i:set_dlg_profile", &profile_name.s, &value.s, &auto_create)) {
+        PyErr_SetString(PyExc_RuntimeError, "python msg_set_dlg_profile: unable to parse params");
         return NULL;
+    }
     profile_name.len = strlen(profile_name.s);
     value.len = strlen(value.s);
     profile = lb_dlg_binds->search_profile(&profile_name);
@@ -700,8 +825,10 @@ static PyMethodDef msg_methods[] = {
       "Rewrite Request-URI."},
     {"set_dst_uri",   (PyCFunction)msg_set_dst_uri,   METH_VARARGS,
       "Set destination URI."},
-    {"getHeader",     (PyCFunction)msg_getHeader,     METH_VARARGS,
+    {"header_get",     (PyCFunction)msg_getHeader,     METH_VARARGS,
       "Get SIP header field by name."},
+    {"header_append",     (PyCFunction)msg_appendHeader,     METH_VARARGS,
+      "Add SIP header field by name."},
     {"run_script_route", (PyCFunction)msg_run_script_route, METH_VARARGS,
       "Run a routing block from python script."},
     {"get_pv", (PyCFunction)msg_get_pv, METH_VARARGS,
